@@ -35,8 +35,10 @@ Copy the `custom_components/brugopen` folder to your
 The NDW feed is a DATEX II `SituationPublication`.  Every `<situation>` element
 in the feed represents a bridge that is **currently open** (being lifted for
 boat traffic).  A bridge that is absent from the feed is implicitly **closed**.
-The integration maintains the complete set of ever-seen bridges in memory;
-their `is_open` flag is updated on every poll cycle.
+The integration maintains the complete set of ever-seen bridges in memory and on storage;
+their `is_open` flag is updated on every poll cycle. If your bridge is not in the list, 
+wait for it to open the first time, after that you can add it (or it will be done if you 
+don't select any bridge)
 
 ## Goals / roadmap
 
