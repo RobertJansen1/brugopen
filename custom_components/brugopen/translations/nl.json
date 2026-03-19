@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Brugopeningen instellen",
+        "description": "Volg brugopeningen in Nederland via de NDW (Nationaal Dataregister Wegverkeer) open data API.\n\nEr zijn geen inloggegevens nodig. Klik na het instellen op het ⚙️-icoon op de integratiekaart om te kiezen welke bruggen je wilt volgen."
+      }
+    },
+    "abort": {
+      "already_configured": "Al geconfigureerd."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Instellingen",
+        "data": {
+          "scan_interval": "Verversingsinterval (seconden)"
+        }
+      },
+      "bridges": {
+        "title": "Selecteer te volgen bruggen",
+        "description": "Kies de bruggen die je wilt bewaken. Laat leeg om alle bruggen te volgen.\n\nBrugnamen kun je aanpassen via Instellingen \u2192 Apparaten & diensten \u2192 Brugopeningen \u2192 het apparaat.",
+        "data": {
+          "watched_bridges": "Bruggen"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "bridge_open": {
+        "name": "Status",
+        "state": {
+          "off": "Gesloten",
+          "on": "Open"
+        }
+      }
+    },
+    "sensor": {
+      "last_opened": {
+        "name": "Laatste opening"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "domain": "brugopen",
+  "name": "Brugopeningen (NDW)",
+  "config_flow": true,
+  "documentation": "https://github.com/RobertJansen1/brugopen",
+  "issue_tracker": "https://github.com/RobertJansen1/brugopen/issues",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": [],
+  "version": "0.4.0",
+  "iot_class": "cloud_polling"
+}

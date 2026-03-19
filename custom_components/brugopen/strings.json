@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Brugopeningen",
+        "description": "Monitor Dutch bridge openings in real time via the NDW (Nationaal Dataregister Wegverkeer) open data API.\n\nNo credentials are required. After setup, click the ⚙️ icon on the integration card to select which bridges you want to follow."
+      }
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_service%]"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "data": {
+          "scan_interval": "Refresh interval (seconds)"
+        }
+      },
+      "bridges": {
+        "title": "Select bridges to follow",
+        "description": "Choose the bridges you want to monitor. Leave empty to follow all bridges.\n\nBridge names can be changed via Settings \u2192 Devices & Services \u2192 Brugopeningen \u2192 the device.",
+        "data": {
+          "watched_bridges": "Bridges"
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "bridge_open": {
+        "name": "Status",
+        "state": {
+          "off": "Closed",
+          "on": "Open"
+        }
+      }
+    },
+    "sensor": {
+      "last_opened": {
+        "name": "Last opened"
+      }
+    }
+  }
+}
