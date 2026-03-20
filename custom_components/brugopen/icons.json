@@ -1,0 +1,21 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "bridge_open": {
+        "default": "mdi:bridge",
+        "state": {
+          "on": "mdi:ferry",
+          "off": "mdi:bridge"
+        }
+      }
+    },
+    "sensor": {
+      "last_opened": {
+        "default": "mdi:history"
+      },
+      "situation_version_time": {
+        "default": "mdi:update"
+      }
+    }
+  }
+}
