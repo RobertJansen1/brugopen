@@ -1,26 +1,25 @@
 """Data coordinator for the Brugopeningen integration.
 
-Fetches the NDW brugopeningen.xml.gz feed (DATEX II SituationPublication format).
+Fetches the NDW actueel_beeld.xml.gz feed (DATEX II v3 SituationPublication).
 
-How the NDW feed works
-----------------------
-The feed contains only bridges that are **currently open** (being lifted for
-boat traffic).  A bridge that does not appear in the feed is implicitly closed.
-Each <situation> element represents one active bridge opening event and
-contains:
-  - situation/@id       – unique event ID; the stable bridge location code is
-                         derived from it by stripping the trailing _<eventId>
-                         segment (e.g. MOS01_NLGRQ000600502900272_97024779
-                         → MOS01_NLGRQ000600502900272)
-  - overallStartTime    – when the bridge was last opened
-  - locationForDisplay  – WGS84 coordinates (latitude / longitude)
-  - descriptor element  – human-readable bridge name (TPEG location descriptor)
+How the NDW v3 feed works
+-------------------------
+The actueel_beeld feed is a combined snapshot of all active traffic situations
+in the Netherlands.  Bridge openings are encoded as situations whose
+situationRecord has xsi:type="sit:GeneralNetworkManagement" and contains a
+<generalNetworkManagementType>bridgeSwingInOperation</generalNetworkManagementType>
+element.
+
+Situation IDs follow the same pattern as the retired v2.3 brugopeningen feed:
+    <prefix>_<locationCode>_<eventId>
+e.g. MOS01_NLGRQ000600502900272_97024779
+
+We strip the trailing event segment to get a stable per-bridge key.
 
 Conditional GETs
 ----------------
 The coordinator sends If-None-Match / If-Modified-Since headers so that the
-full XML is only downloaded when the feed has actually changed.  This allows
-a short polling interval (30 s) without generating unnecessary traffic.
+full XML is only downloaded when the feed has actually changed.
 """
 
 from __future__ import annotations
@@ -32,19 +31,29 @@ from datetime import datetime, timedelta
 from xml.etree import ElementTree
 
 import aiohttp
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from homeassistant.config_entries import ConfigEntry
-
 from .bridge_names import BRIDGE_NAMES
-from .const import CONF_SCAN_INTERVAL, DATA_URL, DATEX_NAMESPACE, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    BRIDGE_MANAGEMENT_TYPE,
+    CONF_SCAN_INTERVAL,
+    DATA_URL,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    NS_COMMON,
+    NS_LOC,
+    NS_SITUATION,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _STORAGE_KEY = f"{DOMAIN}.bridges"
 _STORAGE_VERSION = 1
+
+_XSI_TYPE = "{http://www.w3.org/2001/XMLSchema-instance}type"
 
 
 @dataclass
@@ -57,6 +66,7 @@ class BridgeData:
     last_opened: datetime | None = None
     latitude: float | None = None
     longitude: float | None = None
+    situation_version_time: datetime | None = None
 
 
 def _location_code(bridge_id: str) -> str:
@@ -72,7 +82,6 @@ def _location_code(bridge_id: str) -> str:
     return code if code else bridge_id
 
 
-
 class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
     """Manages fetching and parsing of the NDW bridge opening feed."""
 
@@ -85,11 +94,9 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
             update_interval=timedelta(seconds=interval_seconds),
         )
         self._session = session
-        # HTTP cache-control headers from the previous successful response
         self._etag: str | None = None
         self._last_modified: str | None = None
-        # All bridges ever seen, keyed by stable bridge location code
-        # (situation ID with trailing _<eventId> stripped)
+        # All bridges ever seen, keyed by stable bridge_id (prefix_locationCode)
         self._bridges: dict[str, BridgeData] = {}
         self._store: Store = Store(hass, _STORAGE_VERSION, _STORAGE_KEY)
 
@@ -98,10 +105,8 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
     # ------------------------------------------------------------------
 
     async def _async_update_data(self) -> dict[str, BridgeData]:
-        """Fetch and parse the NDW data feed."""
         raw = await self._fetch()
         if raw is None:
-            # 304 Not Modified – return cached state
             return self._bridges
 
         try:
@@ -129,10 +134,13 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
                     last_opened = datetime.fromisoformat(item["last_opened"])
                 except ValueError:
                     pass
-            # BRIDGE_NAMES always wins – it is an explicit user override.
-            # Fall back to the stored name, then the bare ID.
             name = BRIDGE_NAMES.get(_location_code(bid)) or item.get("name") or bid
-            # Always restore as closed – the next XML fetch will update open bridges
+            svt: datetime | None = None
+            if item.get("situation_version_time"):
+                try:
+                    svt = datetime.fromisoformat(item["situation_version_time"])
+                except ValueError:
+                    pass
             self._bridges[bid] = BridgeData(
                 bridge_id=bid,
                 name=name,
@@ -140,20 +148,22 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
                 last_opened=last_opened,
                 latitude=item.get("latitude"),
                 longitude=item.get("longitude"),
+                situation_version_time=svt,
             )
         _LOGGER.debug("Restored %d bridges from storage", len(self._bridges))
 
     async def _async_save(self) -> None:
-        """Persist current bridge state to .storage."""
-        payload = []
-        for bridge in self._bridges.values():
-            payload.append({
-                "bridge_id": bridge.bridge_id,
-                "name": bridge.name,
-                "last_opened": bridge.last_opened.isoformat() if bridge.last_opened else None,
-                "latitude": bridge.latitude,
-                "longitude": bridge.longitude,
-            })
+        payload = [
+            {
+                "bridge_id": b.bridge_id,
+                "name": b.name,
+                "last_opened": b.last_opened.isoformat() if b.last_opened else None,
+                "latitude": b.latitude,
+                "longitude": b.longitude,
+                "situation_version_time": b.situation_version_time.isoformat() if b.situation_version_time else None,
+            }
+            for b in self._bridges.values()
+        ]
         await self._store.async_save({"bridges": payload})
 
     # ------------------------------------------------------------------
@@ -161,7 +171,6 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
     # ------------------------------------------------------------------
 
     async def _fetch(self) -> bytes | None:
-        """Download the gzipped XML.  Returns None when not modified."""
         headers: dict[str, str] = {}
         if self._etag:
             headers["If-None-Match"] = self._etag
@@ -178,7 +187,6 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
                     return None
                 if resp.status != 200:
                     raise UpdateFailed(f"NDW API returned HTTP {resp.status}")
-                # Save caching headers for the next request
                 self._etag = resp.headers.get("ETag")
                 self._last_modified = resp.headers.get("Last-Modified")
                 return await resp.read()
@@ -186,46 +194,44 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
             raise UpdateFailed(f"Network error reaching NDW API: {err}") from err
 
     # ------------------------------------------------------------------
-    # XML parsing
+    # XML parsing – DATEX II v3
     # ------------------------------------------------------------------
 
     def _parse(self, root: ElementTree.Element) -> dict[str, BridgeData]:
-        """Parse a DATEX II SituationPublication and update _bridges."""
-        ns = DATEX_NAMESPACE
+        """Parse a DATEX II v3 SituationPublication and update _bridges."""
+        sit_ns = NS_SITUATION
         open_ids: set[str] = set()
 
-        for situation in root.iter(f"{{{ns}}}situation"):
+        for situation in root.iter(f"{{{sit_ns}}}situation"):
             situation_id = situation.get("id", "").strip()
             if not situation_id:
                 continue
 
-            # Derive the stable bridge location code by stripping the
-            # trailing _<eventId> segment from the DATEX II situation ID.
-            # Example: MOS01_NLGRQ000600502900272_97024779
-            #        → MOS01_NLGRQ000600502900272
-            bridge_id = self._bridge_id_from_situation(situation_id)
+            # Only process if at least one record is a bridge opening
+            if not self._is_bridge_situation(situation):
+                continue
 
+            bridge_id = self._bridge_id_from_situation(situation_id)
             open_ids.add(bridge_id)
 
-            last_opened = self._parse_start_time(situation, ns)
-            name = (
-                self._extract_name(situation, ns)
-                or BRIDGE_NAMES.get(_location_code(bridge_id))
-                or bridge_id
-            )
-            latitude = self._find_float(situation, ns, "latitude")
-            longitude = self._find_float(situation, ns, "longitude")
+            last_opened = self._parse_start_time(situation)
+            situation_version_time = self._parse_situation_version_time(situation)
+            name = BRIDGE_NAMES.get(_location_code(bridge_id)) or bridge_id
+            latitude, longitude = self._parse_coords(situation)
 
             if bridge_id in self._bridges:
                 bridge = self._bridges[bridge_id]
                 bridge.is_open = True
-                bridge.name = name
                 if last_opened:
                     bridge.last_opened = last_opened
+                if situation_version_time:
+                    bridge.situation_version_time = situation_version_time
                 if latitude is not None:
                     bridge.latitude = latitude
                 if longitude is not None:
                     bridge.longitude = longitude
+                # Refresh name in case bridge_names.py was updated
+                bridge.name = BRIDGE_NAMES.get(_location_code(bridge_id)) or bridge.name
             else:
                 self._bridges[bridge_id] = BridgeData(
                     bridge_id=bridge_id,
@@ -234,10 +240,11 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
                     last_opened=last_opened,
                     latitude=latitude,
                     longitude=longitude,
+                    situation_version_time=situation_version_time,
                 )
                 _LOGGER.debug("Discovered new bridge: %s (%s)", name, bridge_id)
 
-        # Bridges absent from this update have been closed
+        # Bridges not in this update are closed
         for bid, bridge in self._bridges.items():
             if bid not in open_ids:
                 bridge.is_open = False
@@ -245,83 +252,72 @@ class BrugOpenCoordinator(DataUpdateCoordinator[dict[str, BridgeData]]):
         return dict(self._bridges)
 
     # ------------------------------------------------------------------
-    # XML element helpers
+    # XML element helpers – DATEX II v3
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _is_bridge_situation(situation: ElementTree.Element) -> bool:
+        """Return True if the situation contains a bridge opening record.
+
+        In v3 the marker is:
+          <generalNetworkManagementType>bridgeSwingInOperation</generalNetworkManagementType>
+        inside a situationRecord of xsi:type="sit:GeneralNetworkManagement".
+        """
+        mgmt_tag = f"{{{NS_SITUATION}}}generalNetworkManagementType"
+        for el in situation.iter(mgmt_tag):
+            if (el.text or "").strip() == BRIDGE_MANAGEMENT_TYPE:
+                return True
+        return False
+
+    @staticmethod
     def _bridge_id_from_situation(situation_id: str) -> str:
-        """Return the stable bridge location code from a DATEX II situation ID.
+        """Strip trailing event-ID segment from the situation ID.
 
-        DATEX II situation IDs used by NDW follow the pattern:
-            <prefix>_<locationCode>_<eventId>
-        e.g. MOS01_NLGRQ000600502900272_97024779
-
-        The last segment (_97024779) is a unique event counter that changes
-        with every new opening event.  We strip it so that the same physical
-        bridge always maps to the same key.
-
-        If the ID contains fewer than two underscores we return it as-is.
+        MOS01_NLGRQ000600502900272_97024779  →  MOS01_NLGRQ000600502900272
         """
         parts = situation_id.rsplit("_", 1)
         return parts[0] if len(parts) == 2 else situation_id
 
     @staticmethod
-    def _parse_start_time(
-        situation: ElementTree.Element, ns: str
-    ) -> datetime | None:
-        """Extract the overallStartTime from a situation element."""
+    def _parse_start_time(situation: ElementTree.Element) -> datetime | None:
+        """Extract overallStartTime from a v3 situation."""
         el = situation.find(
-            f".//{{{ns}}}validityTimeSpecification/{{{ns}}}overallStartTime"
+            f".//{{{NS_COMMON}}}validityTimeSpecification/{{{NS_COMMON}}}overallStartTime"
         )
         if el is None or not el.text:
             return None
         try:
-            # ISO 8601 with optional trailing Z or +HH:MM offset
             return datetime.fromisoformat(el.text.replace("Z", "+00:00"))
         except ValueError:
             _LOGGER.debug("Could not parse time: %s", el.text)
             return None
 
-    @classmethod
-    def _extract_name(cls, situation: ElementTree.Element, ns: str) -> str | None:
-        """Return a human-readable bridge name from the situation element.
-
-        DATEX II v2 descriptor elements can contain the text either:
-          a) as a direct text node  (older feeds)
-          b) inside a child <value> element  (most NDW feeds)
-
-        We try both and skip short strings that are likely enum codes
-        (e.g. "other", "nl").
-        """
-        for desc in situation.iter(f"{{{ns}}}descriptor"):
-            # (b) DATEX II v2: text is in a <value> child
-            value_el = desc.find(f"{{{ns}}}value")
-            if value_el is not None and value_el.text:
-                text = value_el.text.strip()
-                if len(text) > 4:
-                    return text
-            # (a) older flat format: text directly in <descriptor>
-            if len(desc) == 0 and desc.text:
-                text = desc.text.strip()
-                if len(text) > 4:
-                    return text
-
-        # Nothing found – log the raw XML once so the structure can be inspected
-        _LOGGER.debug(
-            "Could not extract name for situation %s; raw XML: %s",
-            situation.get("id"),
-            ElementTree.tostring(situation, encoding="unicode")[:800],
-        )
-        return None
+    @staticmethod
+    def _parse_situation_version_time(situation: ElementTree.Element) -> datetime | None:
+        """Extract situationVersionTime (NDW last-update timestamp) from a v3 situation."""
+        el = situation.find(f"{{{NS_SITUATION}}}situationVersionTime")
+        if el is None or not el.text:
+            return None
+        try:
+            return datetime.fromisoformat(el.text.replace("Z", "+00:00"))
+        except ValueError:
+            _LOGGER.debug("Could not parse situationVersionTime: %s", el.text)
+            return None
 
     @staticmethod
-    def _find_float(
-        situation: ElementTree.Element, ns: str, tag: str
-    ) -> float | None:
-        el = situation.find(f".//{{{ns}}}locationForDisplay/{{{ns}}}{tag}")
-        if el is not None and el.text:
-            try:
-                return float(el.text)
-            except ValueError:
-                pass
-        return None
+    def _parse_coords(situation: ElementTree.Element) -> tuple[float | None, float | None]:
+        """Extract WGS84 coordinates from a v3 situation."""
+        lat_el = situation.find(
+            f".//{{{NS_LOC}}}pointCoordinates/{{{NS_LOC}}}latitude"
+        )
+        lon_el = situation.find(
+            f".//{{{NS_LOC}}}pointCoordinates/{{{NS_LOC}}}longitude"
+        )
+        try:
+            lat = float(lat_el.text) if lat_el is not None and lat_el.text else None
+            lon = float(lon_el.text) if lon_el is not None and lon_el.text else None
+            return lat, lon
+        except ValueError:
+            return None, None
+
+
