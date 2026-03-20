@@ -25,7 +25,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_WATCHED_BRIDGES, DOMAIN
-from .coordinator import BrugOpenCoordinator
+from .coordinator import BrugOpenCoordinator, _location_code
 from .entity import BridgeEntity
 
 
@@ -96,3 +96,16 @@ class BridgeOpenBinarySensor(BridgeEntity, BinarySensorEntity):
         if self.bridge_data is None:
             return None
         return self.bridge_data.is_open
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Expose coordinates and location code so the HA map card can plot the bridge."""
+        bridge = self.bridge_data
+        if bridge is None:
+            return None
+        attrs: dict = {"location_code": _location_code(bridge.bridge_id)}
+        if bridge.latitude is not None:
+            attrs["latitude"] = bridge.latitude
+        if bridge.longitude is not None:
+            attrs["longitude"] = bridge.longitude
+        return attrs

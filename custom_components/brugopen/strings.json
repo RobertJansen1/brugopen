@@ -40,6 +40,9 @@
     "sensor": {
       "last_opened": {
         "name": "Last opened"
+      },
+      "situation_version_time": {
+        "name": "Last updated by NDW"
       }
     }
   }
